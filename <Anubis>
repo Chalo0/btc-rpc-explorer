@@ -1,0 +1,677 @@
+18511851
+1852
+1853
+1854
+1855
+1856
+1857
+1858
+1859
+1860
+1861
+1862
+1863
+1864
+1865
+1866
+1867
+1868
+1869
+1870
+1871
+1872
+1873
+1874
+1875
+1876
+1877
+1878
+1879
+1880
+1881
+1882
+1883
+1884
+1885
+1886
+1887
+1888
+1889
+1890
+1891
+1892
+1893
+1894
+1895
+1896
+1897
+1898
+1899
+1900
+1901
+1902
+1903
+1904
+1905
+1906
+1907
+1908
+1909
+1910
+1911
+1912
+1913
+1914
+1915
+1916
+1917
+1918
+1919
+1920
+1921
+1922
+1923
+1924
+1925
+1926
+1927
+1928
+1929
+1930
+1931
+1932
+1933
+1934
+1935
+1936
+1937
+1938
+1939
+1940
+1941
+1942
+1943
+1944
+1945
+1946
+1947
+1948
+1949
+1950
+1951
+1952
+1953
+1954
+1955
+1956
+1957
+1958
+1959
+1960
+1961
+1962
+1963
+1964
+1965
+1966
+1967
+1968
+1969
+1970
+1971
+1972
+1973
+1974
+1975
+1976
+1977
+1978
+1979
+1980
+1981
+1982
+1983
+1984
+1985
+1986
+1987
+1988
+1989
+1990
+1991
+1992
+1993
+1994
+1995
+1996
+1997
+1998
+1999
+2000
+2001
+2002
+2003
+2004
+2005
+2006
+2007
+2008
+2009
+2010
+2011
+2012
+2013
+2014
+2015
+2016
+2017
+router.get("/rpc-browser", asyncHandler(async (req, res, next) => {
+    if (!config.demoSite && !req.authenticated) {
+        res.send("RPC Terminal / Browser require authentication. Set an authentication password via the 'BTCEXP_BASIC_AUTH_PASSWORD' environment variable (see .env-sample file for more info).");
+ 
+        next();
+ 
+        return;
+    }
+ 
+    try {
+        const helpContent = await coreApi.getHelp();
+        res.locals.gethelp = helpContent;
+ 
+        var method = "unknown";
+        var argValues = [];
+        if (req.query.method) {
+            method = req.query.method;
+ 
+            if (!req.session.recentRpcCommands) {
+                req.session.recentRpcCommands = [];
+            }
+ 
+            if (!req.session.recentRpcCommands.includes(method)) {
+                req.session.recentRpcCommands.unshift(method);
+                 
+                while (req.session.recentRpcCommands.length > 5) {
+                    req.session.recentRpcCommands.pop();
+                }
+            }
+ 
+            res.locals.method = req.query.method;
+ 
+            const methodHelp = await coreApi.getRpcMethodHelp(req.query.method.trim());
+            res.locals.methodhelp = methodHelp;
+ 
+            if (req.query.execute) {
+                var argDetails = methodHelp.args;
+                 
+                if (req.query.args) {
+                    debugLog("ARGS: " + JSON.stringify(req.query.args));
+ 
+                    for (var i = 0; i < req.query.args.length; i++) {
+                        var argProperties = argDetails[i].properties;
+                        debugLog(`ARG_PROPS[${i}]: ` + JSON.stringify(argProperties));
+ 
+                        for (var j = 0; j < argProperties.length; j++) {
+                            if (argProperties[j] === "numeric") {
+                                if (req.query.args[i] == null || req.query.args[i] == "") {
+                                    argValues.push(null);
+ 
+                                } else {
+                                    argValues.push(parseInt(req.query.args[i]));
+                                }
+ 
+                                break;
+ 
+                            } else if (argProperties[j] === "boolean") {
+                                if (req.query.args[i]) {
+                                    argValues.push(req.query.args[i] == "true");
+                                }
+ 
+                                break;
+ 
+                            } else if (argProperties[j] === "string" || argProperties[j] === "numeric or string" || argProperties[j] === "string or numeric") {
+                                if (req.query.args[i]) {
+                                    argValues.push(req.query.args[i].replace(/[\r]/g, ''));
+                                }
+ 
+                                break;
+ 
+                            } else if (argProperties[j] === "array" || argProperties[j] === "json array") {
+                                if (req.query.args[i]) {
+                                    argValues.push(JSON.parse(req.query.args[i]));
+                                }
+                                 
+                                break;
+ 
+                            } else if (argProperties[j] === "json object") {
+                                if (req.query.args[i]) {
+                                    argValues.push(JSON.parse(req.query.args[i]));
+                                }
+                                 
+                                break;
+ 
+                            } else {
+                                debugLog(`Unknown argument property: ${argProperties[j]}`);
+                            }
+                        }
+                    }
+                }
+ 
+                res.locals.argValues = argValues;
+ 
+                if (config.rpcBlacklist.includes(req.query.method.toLowerCase())) {
+                    res.locals.methodResult = "Sorry, that RPC command is blacklisted. If this is your server, you may allow this command by removing it from the 'rpcBlacklist' setting in config.js.";
+ 
+                    res.render("rpc-browser");
+ 
+                    next();
+ 
+                    return;
+                }
+ 
+                //var csurfPromise = 
+ 
+                await new Promise((resolve, reject) => {
+                    forceCsrf(req, res, async (err) => {
+                        if (err) {
+                            reject(err);
+ 
+                        } else {
+                            resolve();
+                        }
+                    });
+                });
+ 
+                debugLog("Executing RPC '" + req.query.method + "' with params: " + JSON.stringify(argValues));
+ 
+                try {
+                    const startTimeNanos = utils.startTimeNanos();
+                    const result = await global.rpcClientNoTimeout.command([{method:req.query.method, parameters:argValues}]);//, function(err3, result3, resHeaders3) {
+                    const dtMillis = utils.dtMillis(startTimeNanos);
+ 
+                    res.locals.executionMillis = dtMillis;
+ 
+                    debugLog("RPC Response: result=" + JSON.stringify(result));
+ 
+                    if (result) {
+                        res.locals.methodResult = result;
+ 
+                    } else {
+                        res.locals.methodResult = {"Error":"No response from node."};
+                    }
+ 
+                    //res.render("rpc-browser");
+ 
+                    //next();
+ 
+                } catch (err) {
+                    res.locals.pageErrors.push(utils.logError("23roewuhfdghe", err, {method:req.query.method, params:argValues}));
+ 
+                    res.locals.methodResult = {error:("" + err)};
+ 
+                    //res.render("rpc-browser");
+ 
+                    //next();
+                }
+ 
+                /*forceCsrf(req, res, async (err) => {
+                    if (err) {
+                        return next(err);
+                    }
+ 
+                     
+                });*/
+            }
+        }
+    } catch (err) {
+        res.locals.pageErrors.push(utils.logError("23ewyf0weee", err, {method:method, params:argValues}));
+         
+        res.locals.userMessage = "Error loading help content: " + err;
+    }
+ 
+    res.render("rpc-browser");
+ 
+    next();
+}));func (w *workerImpl) getRequestChannel() (<-chan amqp.Delivery, error) {
+    return w.channel.Consume(
+        w.reqQueue.Name,
+        "",    // consumer
+        false, // auto-ack
+        false, // exclusive
+        false, // no-local
+        false, // no-wait
+        amqpArguments,
+    )
+}
+1852
+1853
+1854
+1855
+1856
+1857
+1858
+1859
+1860
+1861
+1862
+1863
+1864
+1865
+1866
+1867
+1868
+1869
+1870
+1871
+1872
+1873
+1874
+1875
+1876
+1877
+1878
+1879
+1880
+1881
+1882
+1883
+1884
+1885
+1886
+1887
+1888
+1889
+1890
+1891
+1892
+1893
+1894
+1895
+1896
+1897
+1898
+1899
+1900
+1901
+1902
+1903
+1904
+1905
+1906
+1907
+1908
+1909
+1910
+1911
+1912
+1913
+1914
+1915
+1916
+1917
+1918
+1919
+1920
+1921
+1922
+1923
+1924
+1925
+1926
+1927
+1928
+1929
+1930
+1931
+1932
+1933
+1934
+1935
+1936
+1937
+1938
+1939
+1940
+1941
+1942
+1943
+1944
+1945
+1946
+1947
+1948
+1949
+1950
+1951
+1952
+1953
+1954
+1955
+1956
+1957
+1958
+1959
+1960
+1961
+1962
+1963
+1964
+1965
+1966
+1967
+1968
+1969
+1970
+1971
+1972
+1973
+1974
+1975
+1976
+1977
+1978
+1979
+1980
+1981
+1982
+1983
+1984
+1985
+1986
+1987
+1988
+1989
+1990
+1991
+1992
+1993
+1994
+1995
+1996
+1997
+1998
+1999
+2000
+2001
+2002
+2003
+2004
+2005
+2006
+2007
+2008
+2009
+2010
+2011
+2012
+2013
+2014
+2015
+2016
+2017
+router.get("/rpc-browser", asyncHandler(async (req, res, next) => {
+    if (!config.demoSite && !req.authenticated) {
+        res.send("RPC Terminal / Browser require authentication. Set an authentication password via the 'BTCEXP_BASIC_AUTH_PASSWORD' environment variable (see .env-sample file for more info).");
+ 
+        next();
+ 
+        return;
+    }
+ 
+    try {
+        const helpContent = await coreApi.getHelp();
+        res.locals.gethelp = helpContent;
+ 
+        var method = "unknown";
+        var argValues = [];
+        if (req.query.method) {
+            method = req.query.method;
+ 
+            if (!req.session.recentRpcCommands) {
+                req.session.recentRpcCommands = [];
+            }
+ 
+            if (!req.session.recentRpcCommands.includes(method)) {
+                req.session.recentRpcCommands.unshift(method);
+                 
+                while (req.session.recentRpcCommands.length > 5) {
+                    req.session.recentRpcCommands.pop();
+                }
+            }
+ 
+            res.locals.method = req.query.method;
+ 
+            const methodHelp = await coreApi.getRpcMethodHelp(req.query.method.trim());
+            res.locals.methodhelp = methodHelp;
+ 
+            if (req.query.execute) {
+                var argDetails = methodHelp.args;
+                 
+                if (req.query.args) {
+                    debugLog("ARGS: " + JSON.stringify(req.query.args));
+ 
+                    for (var i = 0; i < req.query.args.length; i++) {
+                        var argProperties = argDetails[i].properties;
+                        debugLog(`ARG_PROPS[${i}]: ` + JSON.stringify(argProperties));
+ 
+                        for (var j = 0; j < argProperties.length; j++) {
+                            if (argProperties[j] === "numeric") {
+                                if (req.query.args[i] == null || req.query.args[i] == "") {
+                                    argValues.push(null);
+ 
+                                } else {
+                                    argValues.push(parseInt(req.query.args[i]));
+                                }
+ 
+                                break;
+ 
+                            } else if (argProperties[j] === "boolean") {
+                                if (req.query.args[i]) {
+                                    argValues.push(req.query.args[i] == "true");
+                                }
+ 
+                                break;
+ 
+                            } else if (argProperties[j] === "string" || argProperties[j] === "numeric or string" || argProperties[j] === "string or numeric") {
+                                if (req.query.args[i]) {
+                                    argValues.push(req.query.args[i].replace(/[\r]/g, ''));
+                                }
+ 
+                                break;
+ 
+                            } else if (argProperties[j] === "array" || argProperties[j] === "json array") {
+                                if (req.query.args[i]) {
+                                    argValues.push(JSON.parse(req.query.args[i]));
+                                }
+                                 
+                                break;
+ 
+                            } else if (argProperties[j] === "json object") {
+                                if (req.query.args[i]) {
+                                    argValues.push(JSON.parse(req.query.args[i]));
+                                }
+                                 
+                                break;
+ 
+                            } else {
+                                debugLog(`Unknown argument property: ${argProperties[j]}`);
+                            }
+                        }
+                    }
+                }
+ 
+                res.locals.argValues = argValues;
+ 
+                if (config.rpcBlacklist.includes(req.query.method.toLowerCase())) {
+                    res.locals.methodResult = "Sorry, that RPC command is blacklisted. If this is your server, you may allow this command by removing it from the 'rpcBlacklist' setting in config.js.";
+ 
+                    res.render("rpc-browser");
+ 
+                    next();
+ 
+                    return;
+                }
+ 
+                //var csurfPromise = 
+ 
+                await new Promise((resolve, reject) => {
+                    forceCsrf(req, res, async (err) => {
+                        if (err) {
+                            reject(err);
+ 
+                        } else {
+                            resolve();
+                        }
+                    });
+                });
+ 
+                debugLog("Executing RPC '" + req.query.method + "' with params: " + JSON.stringify(argValues));
+ 
+                try {
+                    const startTimeNanos = utils.startTimeNanos();
+                    const result = await global.rpcClientNoTimeout.command([{method:req.query.method, parameters:argValues}]);//, function(err3, result3, resHeaders3) {
+                    const dtMillis = utils.dtMillis(startTimeNanos);
+ 
+                    res.locals.executionMillis = dtMillis;
+ 
+                    debugLog("RPC Response: result=" + JSON.stringify(result));
+ 
+                    if (result) {
+                        res.locals.methodResult = result;
+ 
+                    } else {
+                        res.locals.methodResult = {"Error":"No response from node."};
+                    }
+ 
+                    //res.render("rpc-browser");
+ 
+                    //next();
+ 
+                } catch (err) {
+                    res.locals.pageErrors.push(utils.logError("23roewuhfdghe", err, {method:req.query.method, params:argValues}));
+ 
+                    res.locals.methodResult = {error:("" + err)};
+ 
+                    //res.render("rpc-browser");
+ 
+                    //next();
+                }
+ 
+                /*forceCsrf(req, res, async (err) => {
+                    if (err) {
+                        return next(err);
+                    }
+ 
+                     
+                });*/
+            }
+        }
+    } catch (err) {
+        res.locals.pageErrors.push(utils.logError("23ewyf0weee", err, {method:method, params:argValues}));
+         
+        res.locals.userMessage = "Error loading help content: " + err;
+    }
+ 
+    res.render("rpc-browser");
+ 
+    next();
+}));
